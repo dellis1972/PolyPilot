@@ -1254,7 +1254,27 @@ public partial class CopilotService : IAsyncDisposable
         if (string.IsNullOrEmpty(resumeModel)) resumeModel = DefaultModel;
         Debug($"Resuming session '{displayName}' with model: '{resumeModel}', cwd: '{resumeWorkingDirectory}'");
         var resumeConfig = new ResumeSessionConfig { Model = resumeModel, WorkingDirectory = resumeWorkingDirectory, Tools = new List<Microsoft.Extensions.AI.AIFunction> { ShowImageTool.CreateFunction() }, OnPermissionRequest = AutoApprovePermissions };
-        var copilotSession = await _client.ResumeSessionAsync(sessionId, resumeConfig, cancellationToken);
+
+        CopilotSession copilotSession;
+        try
+        {
+            copilotSession = await _client.ResumeSessionAsync(sessionId, resumeConfig, cancellationToken);
+        }
+        catch (Exception ex) when (IsCorruptedSessionError(ex))
+        {
+            // Session events.jsonl may contain invalid JSON (e.g., from external CLI tools).
+            // Try to sanitize known patterns (capitalized booleans) and retry once.
+            Debug($"[SANITIZE] Resume failed for '{displayName}' with corruption: {ex.Message}");
+            if (TrySanitizeEventsFile(sessionId))
+            {
+                Debug($"[SANITIZE] Sanitized events.jsonl for '{displayName}', retrying resume...");
+                copilotSession = await _client.ResumeSessionAsync(sessionId, resumeConfig, cancellationToken);
+            }
+            else
+            {
+                throw; // Sanitization didn't fix anything — rethrow original error
+            }
+        }
 
         var isStillProcessing = IsSessionStillProcessing(sessionId);
 

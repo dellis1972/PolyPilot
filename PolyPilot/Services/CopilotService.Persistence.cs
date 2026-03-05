@@ -335,10 +335,11 @@ public partial class CopilotService
                         {
                             Debug($"Failed to restore '{entry.DisplayName}': {ex.GetType().Name}: {ex.Message}");
 
-                            // "Session not found" means the CLI server doesn't know this session
-                            // (e.g., worker sessions that were created but never received a message).
-                            // Fall back to creating a fresh session so multi-agent workers don't vanish.
-                            if (ex.Message.Contains("Session not found", StringComparison.OrdinalIgnoreCase))
+                            // "Session not found" or corrupted session file — fall back to creating
+                            // a fresh session. Corrupted files are already attempted to be sanitized
+                            // by ResumeSessionAsync, so if we still get here the file is unrecoverable.
+                            if (ex.Message.Contains("Session not found", StringComparison.OrdinalIgnoreCase)
+                                || IsCorruptedSessionError(ex))
                             {
                                 try
                                 {

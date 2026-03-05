@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using PolyPilot.Models;
 
 namespace PolyPilot.Services;
@@ -502,6 +503,69 @@ public partial class CopilotService
             Debug($"Failed to fetch models: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Attempt to sanitize a corrupted events.jsonl file by fixing known invalid JSON patterns
+    /// (e.g., Python-style capitalized booleans: True→true, False→false, None→null).
+    /// Sessions created by external tools may produce events files that the SDK's strict
+    /// JSON parser rejects on resume.
+    /// </summary>
+    /// <returns>true if any fixes were applied and the file was rewritten.</returns>
+    internal bool TrySanitizeEventsFile(string sessionId) =>
+        TrySanitizeEventsFile(sessionId, SessionStatePath);
+
+    /// <summary>Testable overload that accepts a custom base path.</summary>
+    internal static bool TrySanitizeEventsFile(string sessionId, string basePath)
+    {
+        var eventsFile = Path.Combine(basePath, sessionId, "events.jsonl");
+        if (!File.Exists(eventsFile)) return false;
+
+        try
+        {
+            var lines = File.ReadAllLines(eventsFile);
+            var anyFixed = false;
+
+            for (var i = 0; i < lines.Length; i++)
+            {
+                var original = lines[i];
+                if (string.IsNullOrWhiteSpace(original)) continue;
+
+                // Fix Python-style capitalized boolean/null literals that appear as JSON values.
+                // These patterns match `: True`, `: False`, `: None` (with optional whitespace)
+                // only when they appear as standalone values (followed by comma, closing brace/bracket, or EOL).
+                var sanitized = Regex.Replace(original, @"(?<=[:,\[]\s*)True(?=\s*[,}\]\r\n]|$)", "true");
+                sanitized = Regex.Replace(sanitized, @"(?<=[:,\[]\s*)False(?=\s*[,}\]\r\n]|$)", "false");
+                sanitized = Regex.Replace(sanitized, @"(?<=[:,\[]\s*)None(?=\s*[,}\]\r\n]|$)", "null");
+
+                if (sanitized != original)
+                {
+                    lines[i] = sanitized;
+                    anyFixed = true;
+                }
+            }
+
+            if (anyFixed)
+            {
+                var tempFile = eventsFile + ".sanitized";
+                File.WriteAllLines(tempFile, lines);
+                File.Move(tempFile, eventsFile, overwrite: true);
+            }
+
+            return anyFixed;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Returns true if the exception indicates a corrupted session events file
+    /// that might be recoverable via sanitization.
+    /// </summary>
+    internal static bool IsCorruptedSessionError(Exception ex) =>
+        ex.Message.Contains("Session file is corrupted", StringComparison.OrdinalIgnoreCase) ||
+        ex.Message.Contains("Invalid literal value", StringComparison.OrdinalIgnoreCase);
 
     private async Task FetchGitHubUserInfoAsync()
     {
