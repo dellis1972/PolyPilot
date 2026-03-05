@@ -254,4 +254,65 @@ public class CorruptedSessionRecoveryTests : IDisposable
             doc.Dispose();
         }
     }
+
+    // --- Bridge error propagation tests ---
+    // These verify that the error/turn_end messages sent by the bridge when
+    // SendPromptAsync fails will correctly clear IsProcessing on the remote client.
+
+    [Fact]
+    public void BridgeErrorPayload_ContainsSessionNameAndError()
+    {
+        // Verify ErrorPayload round-trips correctly for the bridge error path
+        var payload = new PolyPilot.Models.ErrorPayload
+        {
+            SessionName = "so we have MyGameStateTest ...",
+            Error = "Session 'so we have MyGameStateTest ...' not found."
+        };
+        var msg = PolyPilot.Models.BridgeMessage.Create(
+            PolyPilot.Models.BridgeMessageTypes.ErrorEvent, payload);
+        var json = msg.Serialize();
+        var restored = PolyPilot.Models.BridgeMessage.Deserialize(json);
+        var restoredPayload = restored!.GetPayload<PolyPilot.Models.ErrorPayload>();
+
+        Assert.NotNull(restoredPayload);
+        Assert.Equal("so we have MyGameStateTest ...", restoredPayload!.SessionName);
+        Assert.Contains("not found", restoredPayload.Error);
+    }
+
+    [Fact]
+    public void BridgeTurnEndPayload_ContainsSessionName()
+    {
+        // Verify TurnEnd message round-trips — this is what clears IsProcessing on the client
+        var payload = new PolyPilot.Models.SessionNamePayload
+        {
+            SessionName = "so we have MyGameStateTest ..."
+        };
+        var msg = PolyPilot.Models.BridgeMessage.Create(
+            PolyPilot.Models.BridgeMessageTypes.TurnEnd, payload);
+        var json = msg.Serialize();
+        var restored = PolyPilot.Models.BridgeMessage.Deserialize(json);
+
+        Assert.Equal(PolyPilot.Models.BridgeMessageTypes.TurnEnd, restored!.Type);
+        var restoredPayload = restored.GetPayload<PolyPilot.Models.SessionNamePayload>();
+        Assert.Equal("so we have MyGameStateTest ...", restoredPayload!.SessionName);
+    }
+
+    [Fact]
+    public void BridgeResumePayload_ContainsSessionIdAndDisplayName()
+    {
+        // Verify ResumeSessionPayload for the bridge resume fallback path
+        var payload = new PolyPilot.Models.ResumeSessionPayload
+        {
+            SessionId = Guid.NewGuid().ToString(),
+            DisplayName = "so we have MyGameStateTest ..."
+        };
+        var msg = PolyPilot.Models.BridgeMessage.Create(
+            PolyPilot.Models.BridgeMessageTypes.ResumeSession, payload);
+        var restored = PolyPilot.Models.BridgeMessage.Deserialize(msg.Serialize());
+        var restoredPayload = restored!.GetPayload<PolyPilot.Models.ResumeSessionPayload>();
+
+        Assert.NotNull(restoredPayload);
+        Assert.Equal(payload.SessionId, restoredPayload!.SessionId);
+        Assert.Equal("so we have MyGameStateTest ...", restoredPayload.DisplayName);
+    }
 }

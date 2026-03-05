@@ -395,7 +395,15 @@ public class WsBridgeServer : IDisposable
                         _ = Task.Run(async () =>
                         {
                             try { await _copilot.SendPromptAsync(sendSession, sendMessage, cancellationToken: ct, agentMode: sendAgentMode); }
-                            catch (Exception ex) { Console.WriteLine($"[WsBridge] SendPromptAsync error for '{sendSession}': {ex.Message}"); }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"[WsBridge] SendPromptAsync error for '{sendSession}': {ex.Message}");
+                                // Notify client so it can clear IsProcessing (otherwise stuck at "Sending" forever)
+                                Broadcast(BridgeMessage.Create(BridgeMessageTypes.ErrorEvent,
+                                    new ErrorPayload { SessionName = sendSession, Error = ex.Message }));
+                                Broadcast(BridgeMessage.Create(BridgeMessageTypes.TurnEnd,
+                                    new SessionNamePayload { SessionName = sendSession }));
+                            }
                         });
                     }
                     break;
@@ -474,9 +482,23 @@ public class WsBridgeServer : IDisposable
                         catch (Exception resumeEx)
                         {
                             Console.WriteLine($"[WsBridge] Resume failed: {resumeEx.Message}");
-                            await SendToClientAsync(clientId, ws,
-                                BridgeMessage.Create(BridgeMessageTypes.ErrorEvent,
-                                    new ErrorPayload { SessionName = displayName, Error = $"Resume failed: {resumeEx.Message}" }), ct);
+                            // Fall back to creating a fresh session so the user can interact
+                            // (history is lost but the session becomes usable)
+                            try
+                            {
+                                Console.WriteLine($"[WsBridge] Falling back to CreateSessionAsync for '{displayName}'");
+                                await _copilot.CreateSessionAsync(displayName, cancellationToken: ct);
+                                Console.WriteLine($"[WsBridge] Fallback session created, broadcasting updated list");
+                                BroadcastSessionsList();
+                                BroadcastOrganizationState();
+                            }
+                            catch (Exception createEx)
+                            {
+                                Console.WriteLine($"[WsBridge] Fallback create also failed: {createEx.Message}");
+                                await SendToClientAsync(clientId, ws,
+                                    BridgeMessage.Create(BridgeMessageTypes.ErrorEvent,
+                                        new ErrorPayload { SessionName = displayName, Error = $"Resume failed: {resumeEx.Message}" }), ct);
+                            }
                         }
                     }
                     break;
